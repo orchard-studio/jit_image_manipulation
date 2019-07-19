@@ -7,12 +7,10 @@
 	define('DOMAIN', rtrim(rtrim($_SERVER['HTTP_HOST'], '/') . str_replace('/extensions/jit_image_manipulation/lib', NULL, dirname($_SERVER['PHP_SELF'])), '/'));
 
 	// Include some parts of the engine
-	require_once(DOCROOT . '/symphony/lib/boot/bundle.php');
-	require_once(CORE . '/class.errorhandler.php');
-	require_once(CORE . '/class.log.php');
-	require_once('class.image.php');
-	require_once(TOOLKIT . '/class.page.php');
-	require_once(CONFIG);
+	require_once DOCROOT . '/vendor/autoload.php';
+	require_once DOCROOT . '/symphony/lib/boot/bundle.php';
+	require_once 'class.image.php';
+	require_once CONFIG;
 
 	// Setup the environment
 	if(method_exists('DateTimeObj', 'setSettings')) {
@@ -27,6 +25,7 @@
 	define_safe('MODE_RESIZE_CROP', 2);
 	define_safe('MODE_CROP', 3);
 	define_safe('MODE_FIT', 4);
+	define_safe('MODE_JCROP', 5);
 	define_safe('CACHING', ($settings['image']['cache'] == 1 ? true : false));
 
 	set_error_handler('__errorHandler');
@@ -39,7 +38,10 @@
 			'position' => 0,
 			'background' => 0,
 			'file' => 0,
-			'external' => false
+			'external' => false,
+			'xpos' => 0,
+			'ypos' => 0,
+			'factor' => 1000
 		);
 
 		// Check for matching recipes
@@ -56,7 +58,7 @@
 					if (!empty($recipe['quality'])) {
 						$image_settings['quality'] = $recipe['quality'];
 					}
-					break 2;
+					break;
 				}
 				// Nope, we're not regex, so make a regex and then check whether we this recipe matches
 				// the URL string. If not, continue to the next recipe.
@@ -137,7 +139,17 @@
 			$param->external = (bool)$matches[0][4];
 			$param->file = $matches[0][5];
 		}
-
+		elseif(preg_match_all('/^5\/([0-9]+)\/([0-9]+)\/([0-9]+)\/([0-9]+)\/([0-9]+)\/([0-9]+)\/(?:(0|1)\/)?(.+)$/i', $string, $matches, PREG_SET_ORDER)){
+			$param->mode = 5;
+			$param->crop_width = $matches[0][1];
+			$param->crop_height = $matches[0][2];
+			$param->xpos = $matches[0][3];
+			$param->ypos = $matches[0][4];
+			$param->width = $matches[0][5];
+			$param->height = $matches[0][6];
+			$param->external = (bool)$matches[0][7];
+			$param->file = $matches[0][8];
+		}
 		// Mode 0: Direct display of image
 		elseif(preg_match_all('/^(?:(0|1)\/)?(.+)$/i', $string, $matches, PREG_SET_ORDER)){
 			$param->external = (bool)$matches[0][1];
@@ -246,9 +258,18 @@
 	if($last_modified) {
 		$last_modified_gmt = gmdate('D, d M Y H:i:s', $last_modified) . ' GMT';
 		$etag = md5($last_modified . $image_path);
+		$cacheControl = 'public';
+		
+		// Add no-transform in order to prevent ISPs to
+		// serve image over http through a compressing proxy
+		// See #79
+		if ($settings['image']['disable_proxy_transform'] == 'yes') {
+			$cacheControl .= ', no-transform';
+		}
+		
 		header('Last-Modified: ' . $last_modified_gmt);
 		header(sprintf('ETag: "%s"', $etag));
-		header('Cache-Control: public');
+		header('Cache-Control: '. $cacheControl);
 	}
 	else {
 		$last_modified_gmt = NULL;
@@ -391,6 +412,10 @@
 		case MODE_CROP:
 			$image->applyFilter('crop', array($dst_w, $dst_h, $param->position, $param->background));
 			break;
+		case MODE_JCROP:
+ 			$image->applyFilter('jcrop', array($param->crop_width, $param->crop_height, $param->xpos, $param->ypos, $param->background));
+ 			$image->applyFilter('resize', array($param->width, $param->height));
+ 			break;
 	}
 
 	// If CACHING is enabled, and a cache file doesn't already exist,
